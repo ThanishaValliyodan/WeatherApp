@@ -1,0 +1,104 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  weather-service:
+    name: Weather Service
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Check weather-service solution
+        id: service_files
+        shell: bash
+        run: |
+          if [ -f weather-service/WeatherApp.sln ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "weather-service/WeatherApp.sln not found yet. Skipping service build until the solution is created."
+          fi
+
+      - name: Restore service
+        if: steps.service_files.outputs.exists == 'true'
+        working-directory: weather-service
+        run: dotnet restore WeatherApp.sln --configfile NuGet.Config
+
+      - name: Build service
+        if: steps.service_files.outputs.exists == 'true'
+        working-directory: weather-service
+        run: dotnet build WeatherApp.sln --configuration Release --no-restore
+
+      - name: Check service tests
+        id: service_tests
+        if: steps.service_files.outputs.exists == 'true'
+        shell: bash
+        run: |
+          if find weather-service/tests -name '*.csproj' | grep -q .; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "No weather-service test projects found yet. Skipping tests."
+          fi
+
+      - name: Test service
+        if: steps.service_files.outputs.exists == 'true' && steps.service_tests.outputs.exists == 'true'
+        working-directory: weather-service
+        run: dotnet test WeatherApp.sln --configuration Release --no-build --verbosity normal
+
+  weather-web:
+    name: Weather Web
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check weather-web project
+        id: web_files
+        shell: bash
+        run: |
+          if [ -f weather-web/package.json ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "weather-web/package.json not found yet. Skipping web build until the React app is created."
+          fi
+
+      - name: Setup Node
+        if: steps.web_files.outputs.exists == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: weather-web/package-lock.json
+
+      - name: Install web dependencies
+        if: steps.web_files.outputs.exists == 'true'
+        working-directory: weather-web
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci
+          else
+            npm install
+          fi
+
+      - name: Build web
+        if: steps.web_files.outputs.exists == 'true'
+        working-directory: weather-web
+        run: npm run build

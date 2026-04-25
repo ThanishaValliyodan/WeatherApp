@@ -1,0 +1,22 @@
+services:
+  weather-service:
+    build:
+      context: ./weather-service
+      dockerfile: Dockerfile
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ConnectionStrings__DefaultConnection: Server=host.docker.internal;Database=WeatherApp;User Id=sa;Password=${SQL_PASSWORD:-Your_password123};TrustServerCertificate=True;
+      AllowedOrigins__0: http://localhost:5173
+    ports:
+      - "5000:8080"
+
+  weather-web:
+    build:
+      context: ./weather-web
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: http://localhost:5000
+    ports:
+      - "5173:8080"
+    depends_on:
+      - weather-service

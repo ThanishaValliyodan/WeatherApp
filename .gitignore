@@ -1,0 +1,71 @@
+# Local project planning
+ProjectPlan.md
+
+# .NET build output
+bin/
+obj/
+artifacts/
+TestResults/
+*.trx
+*.coverage
+*.coveragexml
+coverage/
+.nuget
+
+# .NET user/local files
+.vs/
+.vscode/
+.idea/
+.dotnet/
+.templateengine/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.rsuser
+*.ncrunch*
+*.DotSettings.user
+
+# ASP.NET local secrets and certificates
+secrets.json
+*.pfx
+*.p12
+*.key
+*.crt
+
+# Entity Framework generated local bundles
+efbundle*
+
+# Node / React / Vite
+node_modules/
+dist/
+build/
+.vite/
+.vite-cache/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+
+# Docker local overrides
+docker-compose.override.yml
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.swp

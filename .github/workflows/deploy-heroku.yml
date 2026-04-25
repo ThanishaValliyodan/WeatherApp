@@ -1,0 +1,93 @@
+name: Deploy to Heroku
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy-api:
+    name: Deploy API
+    runs-on: ubuntu-latest
+    if: ${{ vars.HEROKU_API_APP_NAME != '' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check API Dockerfile
+        id: api_dockerfile
+        shell: bash
+        run: |
+          if [ -f weather-service/Dockerfile ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "weather-service/Dockerfile not found yet. Skipping API deployment."
+          fi
+
+      - name: Login to Heroku Container Registry
+        if: steps.api_dockerfile.outputs.exists == 'true'
+        env:
+          HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
+        run: echo "$HEROKU_API_KEY" | docker login --username=_ --password-stdin registry.heroku.com
+
+      - name: Build and push API image
+        if: steps.api_dockerfile.outputs.exists == 'true'
+        run: |
+          docker build -f weather-service/Dockerfile -t registry.heroku.com/${{ vars.HEROKU_API_APP_NAME }}/web weather-service
+          docker push registry.heroku.com/${{ vars.HEROKU_API_APP_NAME }}/web
+
+      - name: Install Heroku CLI
+        if: steps.api_dockerfile.outputs.exists == 'true'
+        run: curl https://cli-assets.heroku.com/install.sh | sh
+
+      - name: Release API image
+        if: steps.api_dockerfile.outputs.exists == 'true'
+        env:
+          HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
+        run: heroku container:release web --app "${{ vars.HEROKU_API_APP_NAME }}"
+
+  deploy-web:
+    name: Deploy Frontend
+    runs-on: ubuntu-latest
+    if: ${{ vars.HEROKU_WEB_APP_NAME != '' }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check weather-web Dockerfile
+        id: web_dockerfile
+        shell: bash
+        run: |
+          if [ -f weather-web/Dockerfile ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "weather-web/Dockerfile not found yet. Skipping weather-web deployment."
+          fi
+
+      - name: Login to Heroku Container Registry
+        if: steps.web_dockerfile.outputs.exists == 'true'
+        env:
+          HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
+        run: echo "$HEROKU_API_KEY" | docker login --username=_ --password-stdin registry.heroku.com
+
+      - name: Build and push weather-web image
+        if: steps.web_dockerfile.outputs.exists == 'true'
+        run: |
+          docker build \
+            -f weather-web/Dockerfile \
+            --build-arg VITE_API_BASE_URL=https://${{ vars.HEROKU_API_APP_NAME }}.herokuapp.com \
+            -t registry.heroku.com/${{ vars.HEROKU_WEB_APP_NAME }}/web \
+            weather-web
+          docker push registry.heroku.com/${{ vars.HEROKU_WEB_APP_NAME }}/web
+
+      - name: Install Heroku CLI
+        if: steps.web_dockerfile.outputs.exists == 'true'
+        run: curl https://cli-assets.heroku.com/install.sh | sh
+
+      - name: Release weather-web image
+        if: steps.web_dockerfile.outputs.exists == 'true'
+        env:
+          HEROKU_API_KEY: ${{ secrets.HEROKU_API_KEY }}
+        run: heroku container:release web --app "${{ vars.HEROKU_WEB_APP_NAME }}"

@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.26" />
+    <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.1" />
     <ProjectReference Include="..\WeatherApp.Application\WeatherApp.Application.csproj" />
     <ProjectReference Include="..\WeatherApp.Domain\WeatherApp.Domain.csproj" />
   </ItemGroup>

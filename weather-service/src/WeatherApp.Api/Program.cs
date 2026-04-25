@@ -6,6 +6,7 @@ using WeatherApp.Application.DTOs;
 using WeatherApp.Application.Features.Status;
 using WeatherApp.Infrastructure.Data;
 using WeatherApp.Infrastructure;
+using System.Text.Json;
 using System.Threading.RateLimiting;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -130,6 +131,10 @@ api.MapGet("/weather/current", async (
     {
         return Results.BadRequest(new { error = ex.Message });
     }
+    catch (Exception ex) when (IsProviderUnavailable(ex))
+    {
+        return Results.Json(new { error = "Weather provider is temporarily unavailable." }, statusCode: StatusCodes.Status502BadGateway);
+    }
 })
 .WithName("GetCurrentWeather")
 .WithSummary("Returns current weather for a location, station, or coordinates.")
@@ -150,6 +155,10 @@ api.MapGet("/weather/forecast", async (
     catch (ArgumentException ex)
     {
         return Results.BadRequest(new { error = ex.Message });
+    }
+    catch (Exception ex) when (IsProviderUnavailable(ex))
+    {
+        return Results.Json(new { error = "Weather provider is temporarily unavailable." }, statusCode: StatusCodes.Status502BadGateway);
     }
 })
 .WithName("GetForecast")
@@ -277,4 +286,9 @@ static bool IsDatabaseUnavailable(Exception exception)
 {
     return exception is InvalidOperationException
         || exception.GetBaseException().GetType().FullName == "Microsoft.Data.SqlClient.SqlException";
+}
+
+static bool IsProviderUnavailable(Exception exception)
+{
+    return exception is HttpRequestException or JsonException or TaskCanceledException;
 }

@@ -104,18 +104,25 @@ internal sealed class WeatherQueryService(
 
         foreach (var (dataset, metricType, defaultUnit) in datasets)
         {
-            using var document = await dataGovSgClient.GetLatestAsync(dataset, cancellationToken);
-            rawByDataset[dataset] = document.RootElement.GetRawText();
-            sources.Add(new ProviderMetadataDto("data.gov.sg", dataset, clock.UtcNow));
-
-            var metric = dataset is DataGovSgDataset.Pm25 or DataGovSgDataset.Psi or DataGovSgDataset.Uv
-                ? ExtractRegionalMetric(document.RootElement, metricType, defaultUnit, resolved.Region)
-                : ExtractStationMetric(document.RootElement, metricType, defaultUnit, resolved.StationId);
-
-            if (metric is not null)
+            try
             {
-                metrics.Add(metric);
-                await UpsertObservationAsync(resolved, metric, dataset, rawByDataset[dataset], cancellationToken);
+                using var document = await dataGovSgClient.GetLatestAsync(dataset, cancellationToken);
+                rawByDataset[dataset] = document.RootElement.GetRawText();
+                sources.Add(new ProviderMetadataDto("data.gov.sg", dataset, clock.UtcNow));
+
+                var metric = dataset is DataGovSgDataset.Pm25 or DataGovSgDataset.Psi or DataGovSgDataset.Uv
+                    ? ExtractRegionalMetric(document.RootElement, metricType, defaultUnit, resolved.Region)
+                    : ExtractStationMetric(document.RootElement, metricType, defaultUnit, resolved.StationId);
+
+                if (metric is not null)
+                {
+                    metrics.Add(metric);
+                    await UpsertObservationAsync(resolved, metric, dataset, rawByDataset[dataset], cancellationToken);
+                }
+            }
+            catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException)
+            {
+                // Skip this dataset and keep the rest. Provider rate limits and transient errors should not fail the whole response.
             }
         }
 

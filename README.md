@@ -5,14 +5,17 @@ WeatherApp is a full-stack Singapore weather application built for the weather m
 The solution has two deployable parts:
 
 - `weather-service`: ASP.NET Core 8 weather microservice using Clean Architecture, SQL Server, EF Core, Swagger/OpenAPI, rate limiting, health checks, and data.gov.sg integration.
-- `weather-web`: React/Vite web client that calls only `weather-service`.
+- `weather-web`: React web client that calls only `weather-service`.
 
 The frontend never calls data.gov.sg directly and never receives the data.gov.sg API key.
 
 ## Features
 
 - Current weather by Singapore location.
-- 2-hour, 24-hour, and 4-day forecasts.
+- Forecasts with provider-accurate scope:
+  - 2-hour forecast by selected forecast area.
+  - 24-hour Singapore overall and regional outlook.
+  - 4-day Singapore-wide outlook.
 - Stored historical weather lookup.
 - CSV export for historical weather records.
 - Weather alert subscriptions with manual alert evaluation.
@@ -42,7 +45,7 @@ Responsibilities:
 
 - .NET 8 SDK
 - Node.js 20
-- SQL Server with SQL authentication or Windows authentication
+- SQL Server with SQL authentication enabled
 - data.gov.sg API key
 - Docker Desktop, optional
 
@@ -149,11 +152,25 @@ Weather:
 ```http
 GET /api/weather/current?location=Ang%20Mo%20Kio
 GET /api/weather/forecast?type=two-hour&location=Ang%20Mo%20Kio
+GET /api/weather/forecast?type=twenty-four-hour
 GET /api/weather/forecast?type=twenty-four-hour&region=west
 GET /api/weather/forecast?type=four-day
 GET /api/weather/history?location=Ang%20Mo%20Kio&from=2026-04-01&to=2026-04-26
 GET /api/weather/export?location=Ang%20Mo%20Kio&from=2026-04-01&to=2026-04-26
 ```
+
+Forecast scope:
+
+- `two-hour` uses the selected forecast area, such as `Ang Mo Kio`.
+- `twenty-four-hour` is not location-specific. Without `region`, it returns Singapore overall plus all regional periods. With `region`, it filters the regional periods while still including the Singapore overall summary.
+- `four-day` is Singapore-wide and does not use `location` or `region`.
+
+Date and timestamp behavior:
+
+- Request date parameters such as `from`, `to`, and sync `date` are plain Singapore calendar dates in `YYYY-MM-DD` format.
+- Historical lookup and CSV export convert the selected Singapore date range to UTC before querying stored records.
+- Response fields ending in `Utc` are UTC-normalized timestamps.
+- The frontend converts UTC timestamps back to Singapore time for display.
 
 Alerts:
 
@@ -248,6 +265,5 @@ On startup, the API applies pending migrations with `MigrateAsync`. This is conv
 
 ## Notes
 
-- PM2.5, PSI, and UV were removed from the fast current-weather dashboard response because the provider often returns null values for these datasets and they slowed down the main dashboard call.
 - Alert delivery is stored/evaluation-only. Email or SMS delivery is intentionally outside the current scope.
 - Historical sync currently records provider sync checkpoints and persisted data required by the implemented history/export flows.

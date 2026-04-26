@@ -8,7 +8,7 @@ COPY src/WeatherApp.Application/WeatherApp.Application.csproj src/WeatherApp.App
 COPY src/WeatherApp.Infrastructure/WeatherApp.Infrastructure.csproj src/WeatherApp.Infrastructure/
 COPY src/WeatherApp.Api/WeatherApp.Api.csproj src/WeatherApp.Api/
 
-RUN dotnet restore WeatherApp.sln --configfile NuGet.Config
+RUN dotnet restore src/WeatherApp.Api/WeatherApp.Api.csproj --configfile NuGet.Config
 
 COPY . .
 RUN dotnet publish src/WeatherApp.Api/WeatherApp.Api.csproj \

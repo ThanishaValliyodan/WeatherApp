@@ -84,12 +84,9 @@ internal sealed class WeatherQueryService(
 
     public async Task<CurrentWeatherResponse> GetCurrentWeatherAsync(
         string? location,
-        string? stationId,
-        decimal? latitude,
-        decimal? longitude,
         CancellationToken cancellationToken)
     {
-        var resolved = await ResolveLocationAsync(location, stationId, latitude, longitude, cancellationToken);
+        var resolved = await ResolveLocationAsync(location, cancellationToken);
         var cacheKey = BuildCurrentWeatherCacheKey(resolved);
         if (CurrentWeatherCache.TryGetValue(cacheKey, out var cached)
             && clock.UtcNow - cached.CachedAtUtc < CurrentWeatherCacheDuration)
@@ -216,26 +213,19 @@ internal sealed class WeatherQueryService(
 
     public async Task<HistoricalWeatherResponse> GetHistoryAsync(
         string? location,
-        string? stationId,
         DateOnly from,
         DateOnly to,
         CancellationToken cancellationToken)
     {
-        ValidateHistoryRequest(location, stationId, from, to);
-        var fromUtc = new DateTimeOffset(from.ToDateTime(TimeOnly.MinValue), TimeSpan.Zero);
-        var toUtc = new DateTimeOffset(to.ToDateTime(TimeOnly.MaxValue), TimeSpan.Zero);
+        ValidateHistoryRequest(location, from, to);
+        var (fromUtc, toExclusiveUtc) = BuildSingaporeDateRangeUtc(from, to);
 
         var query = dbContext.WeatherObservations.AsNoTracking()
-            .Where(record => record.ObservationTimeUtc >= fromUtc && record.ObservationTimeUtc <= toUtc);
+            .Where(record => record.ObservationTimeUtc >= fromUtc && record.ObservationTimeUtc < toExclusiveUtc);
 
         if (!string.IsNullOrWhiteSpace(location))
         {
             query = query.Where(record => record.Location == location);
-        }
-
-        if (!string.IsNullOrWhiteSpace(stationId))
-        {
-            query = query.Where(record => record.StationId == stationId);
         }
 
         List<HistoricalWeatherRecordDto> records;
@@ -262,7 +252,7 @@ internal sealed class WeatherQueryService(
             records = [];
         }
 
-        return new HistoricalWeatherResponse(location ?? stationId!, from, to, records);
+        return new HistoricalWeatherResponse(location!, from, to, records);
     }
 
     public async Task<byte[]> ExportHistoryCsvAsync(string location, DateOnly from, DateOnly to, CancellationToken cancellationToken)
@@ -272,7 +262,7 @@ internal sealed class WeatherQueryService(
             throw new ArgumentException("location is required.");
         }
 
-        var history = await GetHistoryAsync(location, null, from, to, cancellationToken);
+        var history = await GetHistoryAsync(location, from, to, cancellationToken);
         var builder = new StringBuilder();
         builder.AppendLine("Location,LocationType,StationId,Region,TimestampUtc,MetricType,MetricValue,MetricUnit,Provider,ProviderDataset,CreatedAtUtc");
 
@@ -298,21 +288,9 @@ internal sealed class WeatherQueryService(
 
     private async Task<WeatherLocationDto> ResolveLocationAsync(
         string? location,
-        string? stationId,
-        decimal? latitude,
-        decimal? longitude,
         CancellationToken cancellationToken)
     {
         var locations = await GetLocationsAsync(null, cancellationToken);
-
-        if (!string.IsNullOrWhiteSpace(stationId))
-        {
-            var byStation = locations.FirstOrDefault(item => string.Equals(item.StationId, stationId, StringComparison.OrdinalIgnoreCase));
-            if (byStation is not null)
-            {
-                return byStation;
-            }
-        }
 
         if (!string.IsNullOrWhiteSpace(location))
         {
@@ -324,15 +302,7 @@ internal sealed class WeatherQueryService(
             }
         }
 
-        if (latitude is not null && longitude is not null)
-        {
-            return locations
-                .Where(item => item.Latitude is not null && item.Longitude is not null)
-                .OrderBy(item => Math.Abs(item.Latitude!.Value - latitude.Value) + Math.Abs(item.Longitude!.Value - longitude.Value))
-                .First();
-        }
-
-        throw new ArgumentException("Provide one of location, stationId, or latitude plus longitude.");
+        throw new ArgumentException("location is required.");
     }
 
     private static WeatherMetricDto? ExtractStationMetric(JsonElement root, string metricType, string defaultUnit, string? preferredStationId)
@@ -416,16 +386,15 @@ internal sealed class WeatherQueryService(
     private static IReadOnlyList<ForecastItemDto> ExtractTwoHourForecasts(JsonElement root, string? location)
     {
         var metadata = JsonHelpers.EnumerateArray(root, "data", "area_metadata")
+            .Concat(JsonHelpers.EnumerateArray(root, "data", "areaMetadata"))
             .ToDictionary(item => JsonHelpers.GetString(item, "name") ?? string.Empty, item => item, StringComparer.OrdinalIgnoreCase);
 
-        var validFrom = JsonHelpers.GetDateTimeOffset(root, "data", "items", "0", "valid_period", "start");
-        var validTo = JsonHelpers.GetDateTimeOffset(root, "data", "items", "0", "valid_period", "end");
         var results = new List<ForecastItemDto>();
 
-        foreach (var item in JsonHelpers.EnumerateArray(root, "data", "items"))
+        foreach (var item in EnumerateForecastRecords(root))
         {
-            validFrom ??= JsonHelpers.GetDateTimeOffset(item, "valid_period", "start");
-            validTo ??= JsonHelpers.GetDateTimeOffset(item, "valid_period", "end");
+            var validFrom = GetDateTimeOffsetAny(item, ["valid_period", "start"], ["validPeriod", "start"]);
+            var validTo = GetDateTimeOffsetAny(item, ["valid_period", "end"], ["validPeriod", "end"]);
 
             foreach (var forecast in JsonHelpers.EnumerateArray(item, "forecasts"))
             {
@@ -441,10 +410,10 @@ internal sealed class WeatherQueryService(
                 results.Add(new ForecastItemDto(
                     area,
                     null,
-                    JsonHelpers.GetDateTimeOffset(item, "update_timestamp") ?? JsonHelpers.GetDateTimeOffset(item, "timestamp"),
+                    GetDateTimeOffsetAny(item, ["updatedTimestamp"], ["update_timestamp"], ["timestamp"]),
                     validFrom,
                     validTo,
-                    JsonHelpers.GetString(forecast, "forecast") ?? string.Empty,
+                    GetForecastText(forecast) ?? JsonHelpers.GetString(forecast, "forecast") ?? string.Empty,
                     null,
                     null,
                     null,
@@ -452,7 +421,7 @@ internal sealed class WeatherQueryService(
                     null,
                     null,
                     null,
-                    JsonHelpers.GetString(forecast, "forecast_code") ?? JsonHelpers.GetString(meta, "forecast_code")));
+                    GetForecastCode(forecast) ?? JsonHelpers.GetString(meta, "forecast_code") ?? JsonHelpers.GetString(meta, "forecastCode")));
             }
         }
 
@@ -462,26 +431,31 @@ internal sealed class WeatherQueryService(
     private static IReadOnlyList<ForecastItemDto> ExtractTwentyFourHourForecasts(JsonElement root, string? region)
     {
         var results = new List<ForecastItemDto>();
-        foreach (var item in JsonHelpers.EnumerateArray(root, "data", "items"))
+        foreach (var item in EnumerateForecastRecords(root))
         {
             var general = JsonHelpers.GetProperty(item, "general");
             if (general is not null)
             {
+                var validFrom = GetDateTimeOffsetAny(general.Value, ["validPeriod", "start"], ["valid_period", "start"])
+                    ?? GetDateTimeOffsetAny(item, ["validPeriod", "start"], ["valid_period", "start"]);
+                var validTo = GetDateTimeOffsetAny(general.Value, ["validPeriod", "end"], ["valid_period", "end"])
+                    ?? GetDateTimeOffsetAny(item, ["validPeriod", "end"], ["valid_period", "end"]);
+
                 results.Add(new ForecastItemDto(
                     "Singapore",
                     "national",
-                    JsonHelpers.GetDateTimeOffset(item, "update_timestamp") ?? JsonHelpers.GetDateTimeOffset(item, "timestamp"),
-                    JsonHelpers.GetDateTimeOffset(item, "valid_period", "start"),
-                    JsonHelpers.GetDateTimeOffset(item, "valid_period", "end"),
-                    JsonHelpers.GetString(general.Value, "forecast") ?? string.Empty,
+                    GetDateTimeOffsetAny(item, ["updatedTimestamp"], ["update_timestamp"], ["timestamp"]),
+                    validFrom,
+                    validTo,
+                    GetForecastText(general.Value) ?? string.Empty,
                     JsonHelpers.GetDecimal(general.Value, "temperature", "low"),
                     JsonHelpers.GetDecimal(general.Value, "temperature", "high"),
-                    JsonHelpers.GetDecimal(general.Value, "relative_humidity", "low"),
-                    JsonHelpers.GetDecimal(general.Value, "relative_humidity", "high"),
+                    JsonHelpers.GetDecimal(general.Value, "relativeHumidity", "low") ?? JsonHelpers.GetDecimal(general.Value, "relative_humidity", "low"),
+                    JsonHelpers.GetDecimal(general.Value, "relativeHumidity", "high") ?? JsonHelpers.GetDecimal(general.Value, "relative_humidity", "high"),
                     JsonHelpers.GetDecimal(general.Value, "wind", "speed", "low"),
                     JsonHelpers.GetDecimal(general.Value, "wind", "speed", "high"),
                     JsonHelpers.GetString(general.Value, "wind", "direction"),
-                    JsonHelpers.GetString(general.Value, "forecast_code")));
+                    GetForecastCode(general.Value)));
             }
 
             foreach (var period in JsonHelpers.EnumerateArray(item, "periods"))
@@ -503,10 +477,10 @@ internal sealed class WeatherQueryService(
                     results.Add(new ForecastItemDto(
                         regionalForecast.Name,
                         regionalForecast.Name,
-                        JsonHelpers.GetDateTimeOffset(item, "update_timestamp") ?? JsonHelpers.GetDateTimeOffset(item, "timestamp"),
-                        JsonHelpers.GetDateTimeOffset(period, "time", "start"),
-                        JsonHelpers.GetDateTimeOffset(period, "time", "end"),
-                        regionalForecast.Value.GetString() ?? string.Empty,
+                        GetDateTimeOffsetAny(item, ["updatedTimestamp"], ["update_timestamp"], ["timestamp"]),
+                        GetDateTimeOffsetAny(period, ["timePeriod", "start"], ["time", "start"]),
+                        GetDateTimeOffsetAny(period, ["timePeriod", "end"], ["time", "end"]),
+                        GetForecastText(regionalForecast.Value) ?? string.Empty,
                         null,
                         null,
                         null,
@@ -514,7 +488,7 @@ internal sealed class WeatherQueryService(
                         null,
                         null,
                         null,
-                        null));
+                        GetForecastCode(regionalForecast.Value)));
                 }
             }
         }
@@ -525,29 +499,80 @@ internal sealed class WeatherQueryService(
     private static IReadOnlyList<ForecastItemDto> ExtractFourDayForecasts(JsonElement root)
     {
         var results = new List<ForecastItemDto>();
-        foreach (var item in JsonHelpers.EnumerateArray(root, "data", "items"))
+        foreach (var item in EnumerateForecastRecords(root))
         {
             foreach (var forecast in JsonHelpers.EnumerateArray(item, "forecasts"))
             {
                 results.Add(new ForecastItemDto(
                     "Singapore",
                     "national",
-                    JsonHelpers.GetDateTimeOffset(item, "update_timestamp") ?? JsonHelpers.GetDateTimeOffset(item, "timestamp"),
-                    JsonHelpers.GetDateTimeOffset(forecast, "date"),
-                    JsonHelpers.GetDateTimeOffset(forecast, "date"),
-                    JsonHelpers.GetString(forecast, "forecast") ?? string.Empty,
+                    GetDateTimeOffsetAny(item, ["updatedTimestamp"], ["update_timestamp"], ["timestamp"]),
+                    GetDateTimeOffsetAny(forecast, ["timestamp"], ["date"]),
+                    GetDateTimeOffsetAny(forecast, ["timestamp"], ["date"]),
+                    GetForecastText(forecast) ?? string.Empty,
                     JsonHelpers.GetDecimal(forecast, "temperature", "low"),
                     JsonHelpers.GetDecimal(forecast, "temperature", "high"),
-                    JsonHelpers.GetDecimal(forecast, "relative_humidity", "low"),
-                    JsonHelpers.GetDecimal(forecast, "relative_humidity", "high"),
+                    JsonHelpers.GetDecimal(forecast, "relativeHumidity", "low") ?? JsonHelpers.GetDecimal(forecast, "relative_humidity", "low"),
+                    JsonHelpers.GetDecimal(forecast, "relativeHumidity", "high") ?? JsonHelpers.GetDecimal(forecast, "relative_humidity", "high"),
                     JsonHelpers.GetDecimal(forecast, "wind", "speed", "low"),
                     JsonHelpers.GetDecimal(forecast, "wind", "speed", "high"),
                     JsonHelpers.GetString(forecast, "wind", "direction"),
-                    JsonHelpers.GetString(forecast, "forecast_code")));
+                    GetForecastCode(forecast)));
             }
         }
 
         return results;
+    }
+
+    private static IEnumerable<JsonElement> EnumerateForecastRecords(JsonElement root)
+    {
+        return JsonHelpers.EnumerateArray(root, "data", "items")
+            .Concat(JsonHelpers.EnumerateArray(root, "data", "records"));
+    }
+
+    private static DateTimeOffset? GetDateTimeOffsetAny(JsonElement element, params string[][] paths)
+    {
+        foreach (var path in paths)
+        {
+            var value = JsonHelpers.GetDateTimeOffset(element, path);
+            if (value is not null)
+            {
+                return value;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? GetForecastText(JsonElement element)
+    {
+        if (element.ValueKind == JsonValueKind.String)
+        {
+            return element.GetString();
+        }
+
+        var directText = JsonHelpers.GetString(element, "text") ?? JsonHelpers.GetString(element, "summary");
+        if (!string.IsNullOrWhiteSpace(directText))
+        {
+            return directText;
+        }
+
+        var forecast = JsonHelpers.GetProperty(element, "forecast");
+        if (forecast is null)
+        {
+            return null;
+        }
+
+        return forecast.Value.ValueKind == JsonValueKind.String
+            ? forecast.Value.GetString()
+            : JsonHelpers.GetString(forecast.Value, "text") ?? JsonHelpers.GetString(forecast.Value, "summary");
+    }
+
+    private static string? GetForecastCode(JsonElement element)
+    {
+        return JsonHelpers.GetString(element, "forecast_code")
+            ?? JsonHelpers.GetString(element, "forecastCode")
+            ?? JsonHelpers.GetString(element, "forecast", "code");
     }
 
     private async Task UpsertObservationAsync(
@@ -686,16 +711,45 @@ internal sealed class WeatherQueryService(
         return $"{location.Name}|{location.StationId}|{location.Region}|{location.Latitude}|{location.Longitude}";
     }
 
-    private static void ValidateHistoryRequest(string? location, string? stationId, DateOnly from, DateOnly to)
+    private static void ValidateHistoryRequest(string? location, DateOnly from, DateOnly to)
     {
-        if (string.IsNullOrWhiteSpace(location) && string.IsNullOrWhiteSpace(stationId))
+        if (string.IsNullOrWhiteSpace(location))
         {
-            throw new ArgumentException("Provide either location or stationId.");
+            throw new ArgumentException("location is required.");
         }
 
         if (from > to)
         {
             throw new ArgumentException("from must not be later than to.");
+        }
+    }
+
+    private static (DateTimeOffset FromUtc, DateTimeOffset ToExclusiveUtc) BuildSingaporeDateRangeUtc(DateOnly from, DateOnly to)
+    {
+        var singaporeTimeZone = GetSingaporeTimeZone();
+        var fromSingapore = from.ToDateTime(TimeOnly.MinValue);
+        var toExclusiveSingapore = to.AddDays(1).ToDateTime(TimeOnly.MinValue);
+
+        return (
+            ToUtc(fromSingapore, singaporeTimeZone),
+            ToUtc(toExclusiveSingapore, singaporeTimeZone));
+    }
+
+    private static DateTimeOffset ToUtc(DateTime localDateTime, TimeZoneInfo timeZone)
+    {
+        var offset = timeZone.GetUtcOffset(localDateTime);
+        return new DateTimeOffset(localDateTime, offset).ToUniversalTime();
+    }
+
+    private static TimeZoneInfo GetSingaporeTimeZone()
+    {
+        try
+        {
+            return TimeZoneInfo.FindSystemTimeZoneById("Asia/Singapore");
+        }
+        catch (TimeZoneNotFoundException)
+        {
+            return TimeZoneInfo.FindSystemTimeZoneById("Singapore Standard Time");
         }
     }
 

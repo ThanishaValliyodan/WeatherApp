@@ -8,9 +8,6 @@ public interface IWeatherQueryService
 
     Task<CurrentWeatherResponse> GetCurrentWeatherAsync(
         string? location,
-        string? stationId,
-        decimal? latitude,
-        decimal? longitude,
         CancellationToken cancellationToken);
 
     Task<ForecastResponse> GetForecastAsync(
@@ -21,7 +18,6 @@ public interface IWeatherQueryService
 
     Task<HistoricalWeatherResponse> GetHistoryAsync(
         string? location,
-        string? stationId,
         DateOnly from,
         DateOnly to,
         CancellationToken cancellationToken);

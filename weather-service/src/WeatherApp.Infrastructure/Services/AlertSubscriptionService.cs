@@ -82,7 +82,7 @@ internal sealed class AlertSubscriptionService(
             .Where(subscription => subscription.IsActive && subscription.Location == location)
             .ToListAsync(cancellationToken);
 
-        var currentWeather = await weatherQueryService.GetCurrentWeatherAsync(location, null, null, null, cancellationToken);
+        var currentWeather = await weatherQueryService.GetCurrentWeatherAsync(location, cancellationToken);
         var triggeredAlerts = subscriptions
             .Select(subscription => AlertRules.Evaluate(subscription, currentWeather))
             .Where(alert => alert is not null)

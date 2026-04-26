@@ -14,9 +14,12 @@ namespace WeatherApp.Infrastructure.Services;
 internal sealed class WeatherSyncService(
     WeatherDbContext dbContext,
     DataGovSgClient dataGovSgClient,
-    IClock clock) : IWeatherSyncService
+    IClock clock,
+    IWeatherSyncQueue syncQueue) : IWeatherSyncService
 {
-    public async Task<SyncRunDto> SyncAsync(SyncRequest request, CancellationToken cancellationToken)
+    private const int MaxProviderConcurrency = 4;
+
+    public async Task<SyncRunDto> QueueAsync(SyncRequest request, CancellationToken cancellationToken)
     {
         SyncRules.ValidateRequest(request);
 
@@ -25,12 +28,40 @@ internal sealed class WeatherSyncService(
             Id = Guid.NewGuid(),
             SyncType = "Manual",
             StartedAtUtc = clock.UtcNow,
-            Status = "Running",
+            Status = "Queued",
             RequestedFromDate = request.From,
             RequestedToDate = request.To
         };
 
         dbContext.WeatherSyncRuns.Add(run);
+        await dbContext.SaveChangesAsync(cancellationToken);
+        await syncQueue.QueueAsync(new QueuedSyncRequest(run.Id, request), cancellationToken);
+        return ToDto(run);
+    }
+
+    public async Task<SyncRunDto?> GetRunAsync(Guid id, CancellationToken cancellationToken)
+    {
+        var run = await dbContext.WeatherSyncRuns
+            .AsNoTracking()
+            .FirstOrDefaultAsync(item => item.Id == id, cancellationToken);
+
+        return run is null ? null : ToDto(run);
+    }
+
+    public async Task ExecuteQueuedAsync(Guid runId, SyncRequest request, CancellationToken cancellationToken)
+    {
+        SyncRules.ValidateRequest(request);
+
+        var run = await dbContext.WeatherSyncRuns
+            .FirstOrDefaultAsync(item => item.Id == runId, cancellationToken);
+
+        if (run is null)
+        {
+            return;
+        }
+
+        run.Status = "Running";
+        run.ErrorMessage = null;
         await dbContext.SaveChangesAsync(cancellationToken);
 
         var currentDate = request.From;
@@ -38,17 +69,19 @@ internal sealed class WeatherSyncService(
         {
             while (currentDate <= request.To)
             {
+                run.TotalDatesChecked += DataGovSgDataset.HistoricalDatasets.Length;
+                var existingCheckpoints = await dbContext.WeatherSyncCheckpoints
+                    .Where(item =>
+                        item.Provider == "data.gov.sg"
+                        && DataGovSgDataset.HistoricalDatasets.Contains(item.ProviderDataset)
+                        && item.LocationScope == "Singapore"
+                        && item.DataDate == currentDate)
+                    .ToDictionaryAsync(item => item.ProviderDataset, StringComparer.OrdinalIgnoreCase, cancellationToken);
+
+                var pending = new List<(string Dataset, WeatherSyncCheckpoint Checkpoint)>();
                 foreach (var dataset in DataGovSgDataset.HistoricalDatasets)
                 {
-                    run.TotalDatesChecked++;
-
-                    var checkpoint = await dbContext.WeatherSyncCheckpoints.FirstOrDefaultAsync(item =>
-                        item.Provider == "data.gov.sg"
-                        && item.ProviderDataset == dataset
-                        && item.LocationScope == "Singapore"
-                        && item.DataDate == currentDate,
-                        cancellationToken);
-
+                    existingCheckpoints.TryGetValue(dataset, out var checkpoint);
                     if (checkpoint is not null && checkpoint.Status == "Succeeded" && !request.Force)
                     {
                         run.TotalDatesSkipped++;
@@ -63,33 +96,32 @@ internal sealed class WeatherSyncService(
                         DataDate = currentDate
                     };
 
-                    try
+                    pending.Add((dataset, checkpoint));
+                }
+
+                var results = await FetchDatasetResultsAsync(pending.Select(item => item.Dataset), currentDate, cancellationToken);
+                foreach (var (dataset, checkpoint) in pending)
+                {
+                    var result = results[dataset];
+                    checkpoint.Status = result.Succeeded ? "Succeeded" : "Failed";
+                    checkpoint.LastSyncedAtUtc = clock.UtcNow;
+                    checkpoint.RecordsInserted = result.RecordsInserted;
+                    checkpoint.Checksum = result.Checksum;
+                    checkpoint.ErrorMessage = result.ErrorMessage;
+
+                    if (result.Succeeded)
                     {
-                        var pages = await dataGovSgClient.GetByDateAsync(dataset, currentDate, cancellationToken);
-                        var checksumSource = string.Join("", pages.Select(page => page.RootElement.GetRawText()));
-                        checkpoint.Status = "Succeeded";
-                        checkpoint.LastSyncedAtUtc = clock.UtcNow;
-                        checkpoint.RecordsInserted = pages.Count;
-                        checkpoint.Checksum = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(checksumSource)));
-                        checkpoint.ErrorMessage = null;
                         run.TotalDatesFetched++;
-                        run.TotalRecordsInserted += pages.Count;
-                    }
-                    catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
-                    {
-                        checkpoint.Status = "Failed";
-                        checkpoint.LastSyncedAtUtc = clock.UtcNow;
-                        checkpoint.ErrorMessage = ex.Message;
+                        run.TotalRecordsInserted += result.RecordsInserted;
                     }
 
                     if (dbContext.Entry(checkpoint).State == EntityState.Detached)
                     {
                         dbContext.WeatherSyncCheckpoints.Add(checkpoint);
                     }
-
-                    await dbContext.SaveChangesAsync(cancellationToken);
                 }
 
+                await dbContext.SaveChangesAsync(cancellationToken);
                 currentDate = currentDate.AddDays(1);
             }
 
@@ -104,7 +136,57 @@ internal sealed class WeatherSyncService(
         }
 
         await dbContext.SaveChangesAsync(cancellationToken);
-        return ToDto(run);
+    }
+
+    private async Task<Dictionary<string, DatasetSyncResult>> FetchDatasetResultsAsync(
+        IEnumerable<string> datasets,
+        DateOnly date,
+        CancellationToken cancellationToken)
+    {
+        using var semaphore = new SemaphoreSlim(MaxProviderConcurrency);
+        var tasks = datasets.Select(async dataset =>
+        {
+            await semaphore.WaitAsync(cancellationToken);
+            try
+            {
+                return (Dataset: dataset, Result: await FetchDatasetResultAsync(dataset, date, cancellationToken));
+            }
+            finally
+            {
+                semaphore.Release();
+            }
+        });
+
+        var results = await Task.WhenAll(tasks);
+        return results.ToDictionary(item => item.Dataset, item => item.Result, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private async Task<DatasetSyncResult> FetchDatasetResultAsync(
+        string dataset,
+        DateOnly date,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var pages = await dataGovSgClient.GetByDateAsync(dataset, date, cancellationToken);
+            try
+            {
+                var checksumSource = string.Join("", pages.Select(page => page.RootElement.GetRawText()));
+                var checksum = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(checksumSource)));
+                return new DatasetSyncResult(true, pages.Count, checksum, null);
+            }
+            finally
+            {
+                foreach (var page in pages)
+                {
+                    page.Dispose();
+                }
+            }
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException)
+        {
+            return new DatasetSyncResult(false, 0, null, ex.Message);
+        }
     }
 
     private static SyncRunDto ToDto(WeatherSyncRun run)
@@ -123,4 +205,10 @@ internal sealed class WeatherSyncService(
             run.TotalRecordsInserted,
             run.ErrorMessage);
     }
+
+    private sealed record DatasetSyncResult(
+        bool Succeeded,
+        int RecordsInserted,
+        string? Checksum,
+        string? ErrorMessage);
 }

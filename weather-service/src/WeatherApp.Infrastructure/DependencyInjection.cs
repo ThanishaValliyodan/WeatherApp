@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection;
 using WeatherApp.Application.Abstractions.Clock;
 using WeatherApp.Application.Abstractions.Persistence;
 using WeatherApp.Application.Abstractions.Weather;
+using WeatherApp.Infrastructure.BackgroundJobs;
 using WeatherApp.Infrastructure.Data;
 using WeatherApp.Infrastructure.Providers.DataGovSg;
 using WeatherApp.Infrastructure.Services;
@@ -45,6 +46,8 @@ public static class DependencyInjection
         services.AddScoped<IWeatherQueryService, WeatherQueryService>();
         services.AddScoped<IAlertSubscriptionService, AlertSubscriptionService>();
         services.AddScoped<IWeatherSyncService, WeatherSyncService>();
+        services.AddSingleton<IWeatherSyncQueue, WeatherSyncQueue>();
+        services.AddHostedService<WeatherSyncBackgroundService>();
 
         return services;
     }

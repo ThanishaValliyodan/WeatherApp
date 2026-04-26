@@ -5,8 +5,10 @@ using WeatherApp.Application.Abstractions.Weather;
 using WeatherApp.Application.DTOs;
 using WeatherApp.Application.Features.Status;
 using WeatherApp.Api.Middleware;
+using WeatherApp.Api.OpenApi;
 using WeatherApp.Infrastructure.Data;
 using WeatherApp.Infrastructure;
+using Microsoft.OpenApi.Models;
 using Microsoft.Net.Http.Headers;
 using System.Text.Json;
 using System.Threading.RateLimiting;
@@ -37,6 +39,16 @@ if (swaggerEnabled)
             Version = "v1",
             Description = "Weather microservice API backed by data.gov.sg and SQL Server."
         });
+        options.AddSecurityDefinition(AdminApiKeyOperationFilter.SchemeName, new OpenApiSecurityScheme
+        {
+            Description = "Admin API key required for protected operations. Enter the value configured in AdminApiKey.",
+            Name = AdminApiKeyOperationFilter.HeaderName,
+            In = ParameterLocation.Header,
+            Type = SecuritySchemeType.ApiKey,
+            Scheme = AdminApiKeyOperationFilter.SchemeName
+        });
+        options.OperationFilter<AdminApiKeyOperationFilter>();
+        options.SchemaFilter<UtcTimestampSchemaFilter>();
     });
 }
 
@@ -154,16 +166,13 @@ api.MapGet("/locations", async (
 .WithOpenApi();
 
 api.MapGet("/weather/current", async (
-    string? location,
-    string? stationId,
-    decimal? latitude,
-    decimal? longitude,
+    string location,
     IWeatherQueryService weatherQueryService,
     CancellationToken cancellationToken) =>
 {
     try
     {
-        var currentWeather = await weatherQueryService.GetCurrentWeatherAsync(location, stationId, latitude, longitude, cancellationToken);
+        var currentWeather = await weatherQueryService.GetCurrentWeatherAsync(location, cancellationToken);
         return Results.Ok(currentWeather);
     }
     catch (ArgumentException ex)
@@ -176,7 +185,7 @@ api.MapGet("/weather/current", async (
     }
 })
 .WithName("GetCurrentWeather")
-.WithSummary("Returns current weather for a location, station, or coordinates.")
+.WithSummary("Returns current weather for a location.")
 .RequireRateLimiting("public-api")
 .WithOpenApi();
 
@@ -204,11 +213,15 @@ api.MapGet("/weather/forecast", async (
 .WithName("GetForecast")
 .WithSummary("Returns two-hour, twenty-four-hour, or four-day forecasts.")
 .RequireRateLimiting("public-api")
-.WithOpenApi();
+.WithOpenApi(operation =>
+{
+    operation.Description =
+        "Forecast timestamps are returned as UTC-normalized values. data.gov.sg source timestamps are commonly Singapore time (+08:00), and weather-web converts UTC values back to Singapore time for display. The selected location applies only to two-hour forecast areas; twenty-four-hour forecasts are Singapore overall plus regional periods, and four-day outlooks are Singapore-wide.";
+    return operation;
+});
 
 api.MapGet("/weather/history", async (
-    string? location,
-    string? stationId,
+    string location,
     DateOnly from,
     DateOnly to,
     IWeatherQueryService weatherQueryService,
@@ -216,7 +229,7 @@ api.MapGet("/weather/history", async (
 {
     try
     {
-        var history = await weatherQueryService.GetHistoryAsync(location, stationId, from, to, cancellationToken);
+        var history = await weatherQueryService.GetHistoryAsync(location, from, to, cancellationToken);
         return Results.Ok(history);
     }
     catch (ArgumentException ex)
@@ -227,7 +240,12 @@ api.MapGet("/weather/history", async (
 .WithName("GetWeatherHistory")
 .WithSummary("Returns stored historical weather records.")
 .RequireRateLimiting("public-api")
-.WithOpenApi();
+.WithOpenApi(operation =>
+{
+    operation.Description =
+        "The from/to query values are Singapore calendar dates (YYYY-MM-DD). weather-service converts the selected Singapore date range to UTC before querying stored observations.";
+    return operation;
+});
 
 api.MapGet("/weather/export", async (
     string location,
@@ -249,7 +267,12 @@ api.MapGet("/weather/export", async (
 .WithName("ExportWeatherHistory")
 .WithSummary("Exports stored historical weather records as CSV.")
 .RequireRateLimiting("public-api")
-.WithOpenApi();
+.WithOpenApi(operation =>
+{
+    operation.Description =
+        "The from/to query values are Singapore calendar dates (YYYY-MM-DD). The CSV contains records from the matching Singapore date range, while timestamp columns remain UTC-normalized.";
+    return operation;
+});
 
 api.MapPost("/alerts/subscriptions", async (
     AlertSubscriptionRequest request,
@@ -381,8 +404,8 @@ api.MapPost("/weather/history/sync", async (
     try
     {
         var syncRequest = BuildSyncRequest(date, from, to, months, force ?? false);
-        var run = await weatherSyncService.SyncAsync(syncRequest, cancellationToken);
-        return Results.Ok(run);
+        var run = await weatherSyncService.QueueAsync(syncRequest, cancellationToken);
+        return Results.Accepted($"/api/weather/history/sync/runs/{run.Id}", run);
     }
     catch (ArgumentException ex)
     {
@@ -394,7 +417,34 @@ api.MapPost("/weather/history/sync", async (
     }
 })
 .WithName("SyncWeatherHistory")
-.WithSummary("Runs a protected data.gov.sg historical sync.")
+.WithSummary("Queues a protected data.gov.sg historical sync.")
+.RequireRateLimiting("admin-sync-api")
+.WithOpenApi();
+
+api.MapGet("/weather/history/sync/runs/{id:guid}", async (
+    HttpRequest httpRequest,
+    Guid id,
+    IWeatherSyncService weatherSyncService,
+    IConfiguration configuration,
+    CancellationToken cancellationToken) =>
+{
+    if (!IsAdminRequest(httpRequest, configuration))
+    {
+        return Results.Unauthorized();
+    }
+
+    try
+    {
+        var run = await weatherSyncService.GetRunAsync(id, cancellationToken);
+        return run is null ? Results.NotFound() : Results.Ok(run);
+    }
+    catch (Exception ex) when (IsDatabaseUnavailable(ex))
+    {
+        return Results.Json(new { error = "Database is unavailable." }, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+})
+.WithName("GetWeatherHistorySyncRun")
+.WithSummary("Returns the status of a protected historical sync run.")
 .RequireRateLimiting("admin-sync-api")
 .WithOpenApi();
 
@@ -408,8 +458,7 @@ static bool IsAdminRequest(HttpRequest request, IConfiguration configuration)
         return false;
     }
 
-    var providedAdminKey = request.Headers["x-admin-api-key"].FirstOrDefault()
-        ?? request.Query["adminApiKey"].FirstOrDefault();
+    var providedAdminKey = request.Headers["x-admin-api-key"].FirstOrDefault();
 
     return string.Equals(configuredAdminKey, providedAdminKey, StringComparison.Ordinal);
 }

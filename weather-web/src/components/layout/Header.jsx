@@ -13,7 +13,7 @@ export function Header() {
       <div className="app-header-inner">
         <div className="brand">
           <span className="brand-mark" aria-hidden="true">
-            ☁
+            W
           </span>
           <div>
             <p className="brand-eyebrow">WeatherApp</p>

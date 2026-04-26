@@ -14,7 +14,6 @@ internal sealed class EfDatabaseHealthCheck(WeatherDbContext dbContext) : IDatab
     {
         try
         {
-            await dbContext.Database.EnsureCreatedAsync(cancellationToken);
             return await dbContext.Database.CanConnectAsync(cancellationToken);
         }
         catch

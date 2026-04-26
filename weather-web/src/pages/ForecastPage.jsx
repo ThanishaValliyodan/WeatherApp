@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { LocationSelector } from '../components/weather/LocationSelector.jsx';
 import { ForecastPanel } from '../features/forecast/ForecastPanel.jsx';
 import { useLocations } from '../features/locations/useLocations.js';
@@ -6,7 +6,6 @@ import { getForecast } from '../features/forecast/forecastApi.js';
 import { getErrorMessage } from '../lib/api/apiErrors.js';
 
 const DEFAULT_LOCATION = 'Ang Mo Kio';
-const FALLBACK_REGION = 'central';
 
 export function ForecastPage() {
   const { locations, loading: locationsLoading, error: locationsError } = useLocations();
@@ -19,12 +18,6 @@ export function ForecastPage() {
     fourDay: null
   });
 
-  const selectedLocationDetails = useMemo(() => {
-    return locations?.find((location) => location.name === selectedLocation);
-  }, [locations, selectedLocation]);
-
-  const selectedRegion = selectedLocationDetails?.region || FALLBACK_REGION;
-
   const loadForecasts = useCallback(async () => {
     if (!selectedLocation) return;
 
@@ -34,7 +27,7 @@ export function ForecastPage() {
     try {
       const [twoHour, twentyFourHour, fourDay] = await Promise.all([
         getForecast({ type: 'two-hour', location: selectedLocation }),
-        getForecast({ type: 'twenty-four-hour', region: selectedRegion }),
+        getForecast({ type: 'twenty-four-hour' }),
         getForecast({ type: 'four-day' })
       ]);
 
@@ -45,7 +38,7 @@ export function ForecastPage() {
     } finally {
       setLoading(false);
     }
-  }, [selectedLocation, selectedRegion]);
+  }, [selectedLocation]);
 
   useEffect(() => {
     loadForecasts();
@@ -73,7 +66,7 @@ export function ForecastPage() {
           value={selectedLocation}
           onChange={setSelectedLocation}
           locationType="ForecastArea"
-          label="Forecast area"
+          label="2-hour forecast area"
           placeholder="Select a forecast area"
         />
         <button type="button" onClick={loadForecasts} disabled={loading}>
@@ -95,12 +88,12 @@ export function ForecastPage() {
         />
         <ForecastPanel
           title="24-hour forecast"
-          subtitle={locationSubtitle}
+          subtitle="Singapore overall and regional outlook"
           data={forecasts.twentyFourHour}
           loading={loading}
           error=""
           onRetry={loadForecasts}
-          emptyMessage="No 24-hour forecast available for this area."
+          emptyMessage="No 24-hour forecast available."
         />
         <ForecastPanel
           title="4-day outlook"

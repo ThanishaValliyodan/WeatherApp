@@ -470,6 +470,25 @@ button:disabled {
   gap: 12px;
 }
 
+.forecast-region-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+}
+
+.forecast-region-grid span {
+  color: #566573;
+  display: flex;
+  flex-direction: column;
+  font-size: 0.85rem;
+  gap: 2px;
+}
+
+.forecast-region-grid strong {
+  color: #03111f;
+  font-size: 0.8rem;
+}
+
 /* History */
 .summary-strip {
   display: grid;

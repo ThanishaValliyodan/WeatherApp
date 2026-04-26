@@ -56,10 +56,18 @@ jobs:
             echo "No weather-service test projects found yet. Skipping tests."
           fi
 
-      - name: Test service
+      - name: Test service unit tests
         if: steps.service_files.outputs.exists == 'true' && steps.service_tests.outputs.exists == 'true'
         working-directory: weather-service
-        run: dotnet test WeatherApp.sln --configuration Release --no-build --verbosity normal
+        run: dotnet test WeatherApp.sln --configuration Release --no-build --verbosity normal --logger "trx;LogFileName=weather-service-tests.trx" --results-directory TestResults
+
+      - name: Upload service test results
+        if: always() && steps.service_files.outputs.exists == 'true' && steps.service_tests.outputs.exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: weather-service-test-results
+          path: weather-service/TestResults/*.trx
+          if-no-files-found: ignore
 
   weather-web:
     name: Weather Web

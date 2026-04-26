@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using WeatherApp.Application.Abstractions.Clock;
 using WeatherApp.Application.Abstractions.Weather;
 using WeatherApp.Application.DTOs;
+using WeatherApp.Application.Services;
 using WeatherApp.Domain.Entities;
 using WeatherApp.Infrastructure.Data;
 using WeatherApp.Infrastructure.Providers.DataGovSg;
@@ -17,10 +18,7 @@ internal sealed class WeatherSyncService(
 {
     public async Task<SyncRunDto> SyncAsync(SyncRequest request, CancellationToken cancellationToken)
     {
-        if (request.From > request.To)
-        {
-            throw new ArgumentException("from must not be later than to.");
-        }
+        SyncRules.ValidateRequest(request);
 
         var run = new WeatherSyncRun
         {

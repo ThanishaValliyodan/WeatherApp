@@ -3,7 +3,6 @@ import { useLocations } from '../features/locations/useLocations.js';
 import { LocationSelector } from '../components/weather/LocationSelector.jsx';
 import { CurrentWeatherPanel } from '../features/current-weather/CurrentWeatherPanel.jsx';
 import { ForecastPanel } from '../features/forecast/ForecastPanel.jsx';
-import { ServiceStatusBadge } from '../features/status/ServiceStatusBadge.jsx';
 import { getCurrentWeather } from '../features/current-weather/currentWeatherApi.js';
 import { getForecast } from '../features/forecast/forecastApi.js';
 import { getErrorMessage } from '../lib/api/apiErrors.js';
@@ -67,7 +66,6 @@ export function DashboardPage() {
             Pick a forecast area to see live readings and the next two-hour forecast.
           </p>
         </div>
-        <ServiceStatusBadge />
       </header>
 
       <div className="toolbar">

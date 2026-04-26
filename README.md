@@ -45,7 +45,9 @@ Responsibilities:
 
 - .NET 8 SDK
 - Node.js 20
-- SQL Server with SQL authentication enabled
+- SQL Server
+  - Windows authentication for direct local backend runs
+  - SQL authentication enabled for Docker Compose runs
 - data.gov.sg API key
 - Docker Desktop, optional
 
@@ -69,7 +71,46 @@ cd weather-service/src/WeatherApp.Api
 dotnet user-secrets init
 dotnet user-secrets set "DataGovSg:ApiKey" "<your-data-gov-sg-api-key>"
 dotnet user-secrets set "AdminApiKey" "<your-admin-key>"
-dotnet user-secrets set "ConnectionStrings:DefaultConnection" "Server=localhost;Database=WeatherApp;Trusted_Connection=True;TrustServerCertificate=True;"
+```
+
+The default direct local connection string in `appsettings.json` uses Windows authentication:
+
+```text
+Server=localhost;Database=WeatherApp;Trusted_Connection=True;TrustServerCertificate=True;
+```
+
+Set `ConnectionStrings:DefaultConnection` in user secrets only if you want to override that default.
+
+### Obtaining API Keys
+
+To run the solution locally, obtain the required API keys and store them in local configuration.
+
+data.gov.sg API key:
+
+- Create or log in to a data.gov.sg account.
+- Follow the official guide: [How to request an API key](https://guide.data.gov.sg/developer-guide/api-overview/how-to-request-an-api-key).
+- Create a Developer or Production key based on the environment.
+- Copy the key when it is generated and store it securely. data.gov.sg notes that generated keys may not be viewable again.
+- The backend sends this key to data.gov.sg using the `x-api-key` header.
+
+Admin API key:
+
+- This is an application-owned secret for protecting WeatherApp admin sync endpoints.
+- It is not provided by data.gov.sg.
+- Generate a random value locally and store it as `AdminApiKey`.
+
+Example PowerShell command to generate an admin key:
+
+```powershell
+[Convert]::ToBase64String([System.Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+```
+
+Store both keys in .NET user secrets for local backend runs:
+
+```powershell
+cd weather-service/src/WeatherApp.Api
+dotnet user-secrets set "DataGovSg:ApiKey" "<your-data-gov-sg-api-key>"
+dotnet user-secrets set "AdminApiKey" "<generated-admin-api-key>"
 ```
 
 For Docker Compose, configure environment variables before running:
@@ -77,8 +118,16 @@ For Docker Compose, configure environment variables before running:
 ```powershell
 $env:SQL_PASSWORD="<your-sql-password>"
 $env:DATA_GOV_SG_API_KEY="<your-data-gov-sg-api-key>"
-$env:ADMIN_API_KEY="<your-admin-key>"
+$env:ADMIN_API_KEY="<generated-admin-api-key>"
 ```
+
+Docker Compose maps those environment variables into the backend container configuration. The Docker Compose connection string uses SQL authentication against the SQL Server instance on `host.docker.internal`:
+
+```text
+Server=host.docker.internal;Database=WeatherApp;User Id=thanisha;Password=<SQL_PASSWORD>;TrustServerCertificate=True;
+```
+
+Use the same `ADMIN_API_KEY` value in Swagger UI's **Authorize** dialog when testing protected sync endpoints.
 
 ## Run Locally
 

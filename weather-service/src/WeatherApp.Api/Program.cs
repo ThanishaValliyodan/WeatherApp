@@ -4,8 +4,10 @@ using WeatherApp.Application;
 using WeatherApp.Application.Abstractions.Weather;
 using WeatherApp.Application.DTOs;
 using WeatherApp.Application.Features.Status;
+using WeatherApp.Api.Middleware;
 using WeatherApp.Infrastructure.Data;
 using WeatherApp.Infrastructure;
+using Microsoft.Net.Http.Headers;
 using System.Text.Json;
 using System.Threading.RateLimiting;
 
@@ -23,30 +25,34 @@ builder.Services.AddApplication();
 builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddHealthChecks();
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen(options =>
+
+var swaggerEnabled = IsSwaggerEnabled(builder.Configuration, builder.Environment);
+if (swaggerEnabled)
 {
-    options.SwaggerDoc("v1", new()
+    builder.Services.AddSwaggerGen(options =>
     {
-        Title = "WeatherApp weather-service",
-        Version = "v1",
-        Description = "Weather microservice API backed by data.gov.sg and SQL Server."
+        options.SwaggerDoc("v1", new()
+        {
+            Title = "WeatherApp weather-service",
+            Version = "v1",
+            Description = "Weather microservice API backed by data.gov.sg and SQL Server."
+        });
     });
-});
+}
 
 var allowedOrigins = builder.Configuration
     .GetSection("AllowedOrigins")
     .Get<string[]>() ?? [];
 
+allowedOrigins = ResolveAllowedOrigins(builder, allowedOrigins);
+
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("WeatherWeb", policy =>
     {
-        if (allowedOrigins.Length > 0)
-        {
-            policy.WithOrigins(allowedOrigins)
-                .AllowAnyHeader()
-                .AllowAnyMethod();
-        }
+        policy.WithOrigins(allowedOrigins)
+            .WithMethods(HttpMethods.Get, HttpMethods.Post, HttpMethods.Delete)
+            .WithHeaders(HeaderNames.ContentType, "x-admin-api-key");
     });
 });
 builder.Services.AddRateLimiter(options =>
@@ -58,12 +64,44 @@ builder.Services.AddRateLimiter(options =>
         limiter.QueueLimit = 20;
         limiter.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
     });
+
+    options.AddFixedWindowLimiter("alerts-api", limiter =>
+    {
+        limiter.PermitLimit = 20;
+        limiter.Window = TimeSpan.FromMinutes(1);
+        limiter.QueueLimit = 5;
+        limiter.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+    });
+
+    options.AddFixedWindowLimiter("admin-sync-api", limiter =>
+    {
+        limiter.PermitLimit = 3;
+        limiter.Window = TimeSpan.FromMinutes(5);
+        limiter.QueueLimit = 0;
+        limiter.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+    });
+
+    options.OnRejected = async (context, cancellationToken) =>
+    {
+        context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+        context.HttpContext.Response.ContentType = "application/json";
+        await context.HttpContext.Response.WriteAsJsonAsync(new
+        {
+            error = "Too many requests. Please try again later."
+        }, cancellationToken);
+    };
 });
 
 var app = builder.Build();
 
-app.UseSwagger();
-app.UseSwaggerUI();
+app.UseMiddleware<ExceptionHandlingMiddleware>();
+app.UseMiddleware<SecurityHeadersMiddleware>();
+
+if (swaggerEnabled)
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
 
 app.UseHttpsRedirection();
 app.UseCors("WeatherWeb");
@@ -100,7 +138,7 @@ app.MapGet("/api/status", async (
 .WithSummary("Returns service and database connectivity status.")
 .WithOpenApi();
 
-var api = app.MapGroup("/api").RequireRateLimiting("public-api");
+var api = app.MapGroup("/api");
 
 api.MapGet("/locations", async (
     string? query,
@@ -112,6 +150,7 @@ api.MapGet("/locations", async (
 })
 .WithName("GetLocations")
 .WithSummary("Returns supported Singapore weather locations.")
+.RequireRateLimiting("public-api")
 .WithOpenApi();
 
 api.MapGet("/weather/current", async (
@@ -138,6 +177,7 @@ api.MapGet("/weather/current", async (
 })
 .WithName("GetCurrentWeather")
 .WithSummary("Returns current weather for a location, station, or coordinates.")
+.RequireRateLimiting("public-api")
 .WithOpenApi();
 
 api.MapGet("/weather/forecast", async (
@@ -163,6 +203,7 @@ api.MapGet("/weather/forecast", async (
 })
 .WithName("GetForecast")
 .WithSummary("Returns two-hour, twenty-four-hour, or four-day forecasts.")
+.RequireRateLimiting("public-api")
 .WithOpenApi();
 
 api.MapGet("/weather/history", async (
@@ -185,6 +226,7 @@ api.MapGet("/weather/history", async (
 })
 .WithName("GetWeatherHistory")
 .WithSummary("Returns stored historical weather records.")
+.RequireRateLimiting("public-api")
 .WithOpenApi();
 
 api.MapGet("/weather/export", async (
@@ -206,6 +248,118 @@ api.MapGet("/weather/export", async (
 })
 .WithName("ExportWeatherHistory")
 .WithSummary("Exports stored historical weather records as CSV.")
+.RequireRateLimiting("public-api")
+.WithOpenApi();
+
+api.MapPost("/alerts/subscriptions", async (
+    AlertSubscriptionRequest request,
+    IAlertSubscriptionService alertSubscriptionService,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var subscription = await alertSubscriptionService.CreateAsync(request, cancellationToken);
+        return Results.Created($"/api/alerts/subscriptions/{subscription.Id}", subscription);
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+    catch (Exception ex) when (IsDatabaseUnavailable(ex))
+    {
+        return Results.Json(new { error = "Database is unavailable." }, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+})
+.WithName("CreateAlertSubscription")
+.WithSummary("Creates a stored weather alert subscription.")
+.RequireRateLimiting("alerts-api")
+.WithOpenApi();
+
+api.MapGet("/alerts/subscriptions", async (
+    IAlertSubscriptionService alertSubscriptionService,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var subscriptions = await alertSubscriptionService.GetActiveAsync(cancellationToken);
+        return Results.Ok(subscriptions);
+    }
+    catch (Exception ex) when (IsDatabaseUnavailable(ex))
+    {
+        return Results.Json(new { error = "Database is unavailable." }, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+})
+.WithName("GetAlertSubscriptions")
+.WithSummary("Returns active weather alert subscriptions.")
+.RequireRateLimiting("public-api")
+.WithOpenApi();
+
+api.MapGet("/alerts/subscriptions/{id:guid}", async (
+    Guid id,
+    IAlertSubscriptionService alertSubscriptionService,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var subscription = await alertSubscriptionService.GetAsync(id, cancellationToken);
+        return subscription is null ? Results.NotFound() : Results.Ok(subscription);
+    }
+    catch (Exception ex) when (IsDatabaseUnavailable(ex))
+    {
+        return Results.Json(new { error = "Database is unavailable." }, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+})
+.WithName("GetAlertSubscription")
+.WithSummary("Returns one weather alert subscription.")
+.RequireRateLimiting("public-api")
+.WithOpenApi();
+
+api.MapDelete("/alerts/subscriptions/{id:guid}", async (
+    Guid id,
+    IAlertSubscriptionService alertSubscriptionService,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var deactivated = await alertSubscriptionService.DeactivateAsync(id, cancellationToken);
+        return deactivated ? Results.NoContent() : Results.NotFound();
+    }
+    catch (Exception ex) when (IsDatabaseUnavailable(ex))
+    {
+        return Results.Json(new { error = "Database is unavailable." }, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+})
+.WithName("DeleteAlertSubscription")
+.WithSummary("Marks a weather alert subscription inactive.")
+.RequireRateLimiting("alerts-api")
+.WithOpenApi();
+
+api.MapPost("/alerts/evaluate", async (
+    string location,
+    IAlertSubscriptionService alertSubscriptionService,
+    CancellationToken cancellationToken) =>
+{
+    try
+    {
+        var evaluation = await alertSubscriptionService.EvaluateAsync(location, cancellationToken);
+        return Results.Ok(evaluation);
+    }
+    catch (ArgumentException ex)
+    {
+        return Results.BadRequest(new { error = ex.Message });
+    }
+    catch (Exception ex) when (IsProviderUnavailable(ex))
+    {
+        return Results.Json(new { error = "Weather provider is temporarily unavailable." }, statusCode: StatusCodes.Status502BadGateway);
+    }
+    catch (Exception ex) when (IsDatabaseUnavailable(ex))
+    {
+        return Results.Json(new { error = "Database is unavailable." }, statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+})
+.WithName("EvaluateAlertSubscriptions")
+.WithSummary("Evaluates active alert subscriptions against current weather.")
+.RequireRateLimiting("alerts-api")
 .WithOpenApi();
 
 api.MapPost("/weather/history/sync", async (
@@ -241,6 +395,7 @@ api.MapPost("/weather/history/sync", async (
 })
 .WithName("SyncWeatherHistory")
 .WithSummary("Runs a protected data.gov.sg historical sync.")
+.RequireRateLimiting("admin-sync-api")
 .WithOpenApi();
 
 app.Run();
@@ -291,4 +446,49 @@ static bool IsDatabaseUnavailable(Exception exception)
 static bool IsProviderUnavailable(Exception exception)
 {
     return exception is HttpRequestException or JsonException or TaskCanceledException;
+}
+
+static bool IsSwaggerEnabled(IConfiguration configuration, IWebHostEnvironment environment)
+{
+    return configuration.GetValue<bool?>("Swagger:Enabled") ?? environment.IsDevelopment();
+}
+
+static string[] ResolveAllowedOrigins(WebApplicationBuilder builder, string[] configuredOrigins)
+{
+    var allowedOrigins = configuredOrigins
+        .Select(origin => origin.Trim().TrimEnd('/'))
+        .Where(origin => !string.IsNullOrWhiteSpace(origin))
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .ToArray();
+
+    if (allowedOrigins.Length == 0 && builder.Environment.IsDevelopment())
+    {
+        allowedOrigins =
+        [
+            "http://localhost:5173",
+            "http://127.0.0.1:5173"
+        ];
+    }
+
+    if (allowedOrigins.Length == 0)
+    {
+        throw new InvalidOperationException("Configure at least one AllowedOrigins entry for CORS.");
+    }
+
+    foreach (var origin in allowedOrigins)
+    {
+        if (origin.Contains('*', StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("CORS origins must be explicit. Wildcard origins are not allowed.");
+        }
+
+        if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri)
+            || (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps)
+            || !string.IsNullOrWhiteSpace(uri.PathAndQuery.Trim('/')))
+        {
+            throw new InvalidOperationException($"Invalid CORS origin '{origin}'. Use an absolute HTTP or HTTPS origin without a path.");
+        }
+    }
+
+    return allowedOrigins;
 }

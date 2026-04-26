@@ -5,8 +5,12 @@ services:
       dockerfile: Dockerfile
     environment:
       ASPNETCORE_ENVIRONMENT: Development
-      ConnectionStrings__DefaultConnection: Server=host.docker.internal;Database=WeatherApp;User Id=sa;Password=${SQL_PASSWORD:-Your_password123};TrustServerCertificate=True;
+      PORT: 8080
+      ConnectionStrings__DefaultConnection: Server=host.docker.internal;Database=WeatherApp;User Id=thanisha;Password=${SQL_PASSWORD:-thanishasq123};TrustServerCertificate=True;
       AllowedOrigins__0: http://localhost:5173
+      AllowedOrigins__1: http://127.0.0.1:5173
+      DataGovSg__ApiKey: ${DATA_GOV_SG_API_KEY:-}
+      AdminApiKey: ${ADMIN_API_KEY:-}
     ports:
       - "5000:8080"
 
@@ -16,6 +20,8 @@ services:
       dockerfile: Dockerfile
       args:
         VITE_API_BASE_URL: http://localhost:5000
+    environment:
+      PORT: 8080
     ports:
       - "5173:8080"
     depends_on:

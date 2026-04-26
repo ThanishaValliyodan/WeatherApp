@@ -577,6 +577,57 @@ button:disabled {
   font-size: 0.9rem;
 }
 
+/* Alerts */
+.alert-form {
+  display: grid;
+  gap: 16px;
+}
+
+.button-group-left {
+  margin-left: 0;
+}
+
+.alert-list {
+  display: grid;
+  gap: 12px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.alert-item {
+  align-items: center;
+  background: #f4f7fb;
+  border-radius: 8px;
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+  padding: 12px 14px;
+}
+
+.alert-item-triggered {
+  align-items: flex-start;
+  background: #fff7e0;
+  border: 1px solid #ffe0a3;
+  flex-direction: column;
+}
+
+.alert-item strong,
+.alert-item span,
+.alert-item small {
+  display: block;
+}
+
+.alert-item span {
+  color: #566573;
+  margin-top: 2px;
+}
+
+.alert-item small {
+  color: #687888;
+  margin-top: 4px;
+}
+
 /* States */
 .state {
   align-items: center;

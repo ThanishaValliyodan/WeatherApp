@@ -8,6 +8,7 @@ public sealed class WeatherDbContext(DbContextOptions<WeatherDbContext> options)
     public DbSet<WeatherObservation> WeatherObservations => Set<WeatherObservation>();
     public DbSet<WeatherForecast> WeatherForecasts => Set<WeatherForecast>();
     public DbSet<WeatherLocation> WeatherLocations => Set<WeatherLocation>();
+    public DbSet<AlertSubscription> AlertSubscriptions => Set<AlertSubscription>();
     public DbSet<WeatherSyncRun> WeatherSyncRuns => Set<WeatherSyncRun>();
     public DbSet<WeatherSyncCheckpoint> WeatherSyncCheckpoints => Set<WeatherSyncCheckpoint>();
 
@@ -89,6 +90,16 @@ public sealed class WeatherDbContext(DbContextOptions<WeatherDbContext> options)
             builder.Property(location => location.Longitude).HasPrecision(9, 6);
             builder.Property(location => location.SourceDataset).HasMaxLength(120).IsRequired();
             builder.HasIndex(location => new { location.Name, location.LocationType, location.StationId }).IsUnique();
+        });
+
+        modelBuilder.Entity<AlertSubscription>(builder =>
+        {
+            builder.HasKey(subscription => subscription.Id);
+            builder.Property(subscription => subscription.Email).HasMaxLength(254).IsRequired();
+            builder.Property(subscription => subscription.Location).HasMaxLength(150).IsRequired();
+            builder.Property(subscription => subscription.AlertType).HasMaxLength(80).IsRequired();
+            builder.Property(subscription => subscription.ThresholdValue).HasPrecision(10, 2);
+            builder.HasIndex(subscription => new { subscription.Email, subscription.Location, subscription.AlertType, subscription.IsActive });
         });
 
         modelBuilder.Entity<WeatherSyncRun>(builder =>

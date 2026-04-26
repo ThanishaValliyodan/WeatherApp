@@ -41,7 +41,6 @@ export function LocationSelector({
             value={location.name}
           >
             {location.name}
-            {location.region ? ` - ${location.region}` : ''}
           </option>
         ))}
       </select>

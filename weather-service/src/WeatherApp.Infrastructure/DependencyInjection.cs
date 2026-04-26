@@ -21,7 +21,13 @@ public static class DependencyInjection
             ?? throw new InvalidOperationException("ConnectionStrings:DefaultConnection is not configured.");
 
         services.AddDbContext<WeatherDbContext>(options =>
-            options.UseSqlServer(connectionString));
+            options.UseSqlServer(connectionString, sqlOptions =>
+            {
+                sqlOptions.EnableRetryOnFailure(
+                    maxRetryCount: 5,
+                    maxRetryDelay: TimeSpan.FromSeconds(10),
+                    errorNumbersToAdd: null);
+            }));
 
         services.AddScoped<IDatabaseHealthCheck, EfDatabaseHealthCheck>();
         services.AddSingleton<IClock, SystemClock>();
@@ -37,6 +43,7 @@ public static class DependencyInjection
         });
 
         services.AddScoped<IWeatherQueryService, WeatherQueryService>();
+        services.AddScoped<IAlertSubscriptionService, AlertSubscriptionService>();
         services.AddScoped<IWeatherSyncService, WeatherSyncService>();
 
         return services;

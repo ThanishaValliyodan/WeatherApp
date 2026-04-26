@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
@@ -16,6 +17,9 @@ internal sealed class WeatherQueryService(
     DataGovSgClient dataGovSgClient,
     IClock clock) : IWeatherQueryService
 {
+    private static readonly ConcurrentDictionary<string, CurrentWeatherCacheEntry> CurrentWeatherCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly TimeSpan CurrentWeatherCacheDuration = TimeSpan.FromSeconds(45);
+
     private static readonly WeatherLocationDto[] SeedLocations =
     [
         new("Ang Mo Kio", "ForecastArea", null, "central", 1.375m, 103.839m, DataGovSgDataset.TwoHourForecast),
@@ -86,49 +90,47 @@ internal sealed class WeatherQueryService(
         CancellationToken cancellationToken)
     {
         var resolved = await ResolveLocationAsync(location, stationId, latitude, longitude, cancellationToken);
+        var cacheKey = BuildCurrentWeatherCacheKey(resolved);
+        if (CurrentWeatherCache.TryGetValue(cacheKey, out var cached)
+            && clock.UtcNow - cached.CachedAtUtc < CurrentWeatherCacheDuration)
+        {
+            return cached.Response;
+        }
+
         var datasets = new[]
         {
             (DataGovSgDataset.AirTemperature, "Temperature", "deg C"),
             (DataGovSgDataset.RelativeHumidity, "RelativeHumidity", "%"),
             (DataGovSgDataset.Rainfall, "Rainfall", "mm"),
             (DataGovSgDataset.WindSpeed, "WindSpeed", "knots"),
-            (DataGovSgDataset.WindDirection, "WindDirection", "degrees"),
-            (DataGovSgDataset.Pm25, "PM25", "ug/m3"),
-            (DataGovSgDataset.Psi, "PSI", "index"),
-            (DataGovSgDataset.Uv, "UVIndex", "index")
+            (DataGovSgDataset.WindDirection, "WindDirection", "degrees")
         };
 
-        var metrics = new List<WeatherMetricDto>();
-        var sources = new List<ProviderMetadataDto>();
-        var rawByDataset = new Dictionary<string, string>();
+        var providerResults = await Task.WhenAll(datasets.Select(dataset =>
+            FetchCurrentMetricAsync(resolved, dataset.Item1, dataset.Item2, dataset.Item3, cancellationToken)));
 
-        foreach (var (dataset, metricType, defaultUnit) in datasets)
+        var successfulProviderResults = providerResults
+            .Where(result => result is not null)
+            .Select(result => result!)
+            .ToList();
+
+        var metrics = successfulProviderResults
+            .Where(result => result.Metric is not null)
+            .Select(result => result.Metric!)
+            .ToList();
+
+        var sources = successfulProviderResults
+            .Select(result => new ProviderMetadataDto("data.gov.sg", result.Dataset, clock.UtcNow))
+            .ToList();
+
+        foreach (var result in successfulProviderResults.Where(result => result.Metric is not null))
         {
-            try
-            {
-                using var document = await dataGovSgClient.GetLatestAsync(dataset, cancellationToken);
-                rawByDataset[dataset] = document.RootElement.GetRawText();
-                sources.Add(new ProviderMetadataDto("data.gov.sg", dataset, clock.UtcNow));
-
-                var metric = dataset is DataGovSgDataset.Pm25 or DataGovSgDataset.Psi or DataGovSgDataset.Uv
-                    ? ExtractRegionalMetric(document.RootElement, metricType, defaultUnit, resolved.Region)
-                    : ExtractStationMetric(document.RootElement, metricType, defaultUnit, resolved.StationId);
-
-                if (metric is not null)
-                {
-                    metrics.Add(metric);
-                    await UpsertObservationAsync(resolved, metric, dataset, rawByDataset[dataset], cancellationToken);
-                }
-            }
-            catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException)
-            {
-                // Skip this dataset and keep the rest. Provider rate limits and transient errors should not fail the whole response.
-            }
+            await UpsertObservationAsync(resolved, result.Metric!, result.Dataset, result.RawPayload, cancellationToken);
         }
 
         await TrySaveChangesAsync(cancellationToken);
 
-        return new CurrentWeatherResponse(
+        var response = new CurrentWeatherResponse(
             resolved,
             metrics,
             FindMetric(metrics, "Temperature"),
@@ -136,10 +138,37 @@ internal sealed class WeatherQueryService(
             FindMetric(metrics, "Rainfall"),
             FindMetric(metrics, "WindSpeed"),
             FindMetric(metrics, "WindDirection"),
-            FindMetric(metrics, "PM25"),
-            FindMetric(metrics, "PSI"),
-            FindMetric(metrics, "UVIndex"),
             sources);
+
+        if (sources.Count > 0)
+        {
+            CurrentWeatherCache[cacheKey] = new CurrentWeatherCacheEntry(clock.UtcNow, response);
+        }
+
+        return response;
+    }
+
+    private async Task<CurrentMetricResult?> FetchCurrentMetricAsync(
+        WeatherLocationDto resolved,
+        string dataset,
+        string metricType,
+        string defaultUnit,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var document = await dataGovSgClient.GetLatestAsync(dataset, cancellationToken);
+            var metric = dataset is DataGovSgDataset.Pm25 or DataGovSgDataset.Psi or DataGovSgDataset.Uv
+                ? ExtractRegionalMetric(document.RootElement, metricType, defaultUnit, resolved.Region)
+                : ExtractStationMetric(document.RootElement, metricType, defaultUnit, resolved.StationId);
+
+            return new CurrentMetricResult(dataset, document.RootElement.GetRawText(), metric);
+        }
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or TaskCanceledException)
+        {
+            // Skip this dataset and keep the rest. Provider rate limits and transient errors should not fail the whole response.
+            return null;
+        }
     }
 
     public async Task<ForecastResponse> GetForecastAsync(
@@ -652,6 +681,11 @@ internal sealed class WeatherQueryService(
         return metrics.FirstOrDefault(metric => metric.MetricType == metricType)?.MetricValue;
     }
 
+    private static string BuildCurrentWeatherCacheKey(WeatherLocationDto location)
+    {
+        return $"{location.Name}|{location.StationId}|{location.Region}|{location.Latitude}|{location.Longitude}";
+    }
+
     private static void ValidateHistoryRequest(string? location, string? stationId, DateOnly from, DateOnly to)
     {
         if (string.IsNullOrWhiteSpace(location) && string.IsNullOrWhiteSpace(stationId))
@@ -672,4 +706,13 @@ internal sealed class WeatherQueryService(
             ? $"\"{value.Replace("\"", "\"\"")}\""
             : value;
     }
+
+    private sealed record CurrentMetricResult(
+        string Dataset,
+        string RawPayload,
+        WeatherMetricDto? Metric);
+
+    private sealed record CurrentWeatherCacheEntry(
+        DateTimeOffset CachedAtUtc,
+        CurrentWeatherResponse Response);
 }

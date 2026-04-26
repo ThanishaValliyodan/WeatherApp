@@ -30,9 +30,6 @@ public sealed record CurrentWeatherResponse(
     decimal? RainfallMm,
     decimal? WindSpeed,
     decimal? WindDirectionDegrees,
-    decimal? Pm25,
-    decimal? Psi,
-    decimal? UvIndex,
     IReadOnlyList<ProviderMetadataDto> Sources);
 
 public sealed record ForecastResponse(
@@ -76,6 +73,37 @@ public sealed record HistoricalWeatherRecordDto(
     string Provider,
     string ProviderDataset,
     DateTimeOffset CreatedAtUtc);
+
+public sealed record AlertSubscriptionRequest(
+    string Email,
+    string Location,
+    string AlertType,
+    decimal ThresholdValue);
+
+public sealed record AlertSubscriptionDto(
+    Guid Id,
+    string Email,
+    string Location,
+    string AlertType,
+    decimal ThresholdValue,
+    bool IsActive,
+    DateTimeOffset CreatedAtUtc,
+    DateTimeOffset UpdatedAtUtc);
+
+public sealed record AlertEvaluationResponse(
+    string Location,
+    DateTimeOffset EvaluatedAtUtc,
+    IReadOnlyList<TriggeredAlertDto> TriggeredAlerts);
+
+public sealed record TriggeredAlertDto(
+    Guid SubscriptionId,
+    string Email,
+    string Location,
+    string AlertType,
+    decimal ThresholdValue,
+    decimal ActualValue,
+    string MetricUnit,
+    string Message);
 
 public sealed record SyncRequest(DateOnly From, DateOnly To, bool Force);
 

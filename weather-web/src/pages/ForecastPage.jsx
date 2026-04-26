@@ -6,28 +6,11 @@ import { getForecast } from '../features/forecast/forecastApi.js';
 import { getErrorMessage } from '../lib/api/apiErrors.js';
 
 const DEFAULT_LOCATION = 'Ang Mo Kio';
-const DEFAULT_REGION = 'west';
-const REGIONS = ['central', 'east', 'north', 'south', 'west'];
-
-function RegionSelector({ value, onChange }) {
-  return (
-    <div className="field">
-      <label htmlFor="forecast-region">Region</label>
-      <select id="forecast-region" value={value} onChange={(event) => onChange(event.target.value)}>
-        {REGIONS.map((region) => (
-          <option key={region} value={region}>
-            {region[0].toUpperCase() + region.slice(1)}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}
+const FALLBACK_REGION = 'central';
 
 export function ForecastPage() {
   const { locations, loading: locationsLoading, error: locationsError } = useLocations();
   const [selectedLocation, setSelectedLocation] = useState(DEFAULT_LOCATION);
-  const [selectedRegion, setSelectedRegion] = useState(DEFAULT_REGION);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [forecasts, setForecasts] = useState({
@@ -36,7 +19,15 @@ export function ForecastPage() {
     fourDay: null
   });
 
+  const selectedLocationDetails = useMemo(() => {
+    return locations?.find((location) => location.name === selectedLocation);
+  }, [locations, selectedLocation]);
+
+  const selectedRegion = selectedLocationDetails?.region || FALLBACK_REGION;
+
   const loadForecasts = useCallback(async () => {
+    if (!selectedLocation) return;
+
     setLoading(true);
     setError('');
 
@@ -60,9 +51,7 @@ export function ForecastPage() {
     loadForecasts();
   }, [loadForecasts]);
 
-  const locationSubtitle = useMemo(() => {
-    return selectedLocation ? `For ${selectedLocation}` : 'Select a forecast area';
-  }, [selectedLocation]);
+  const locationSubtitle = selectedLocation ? `For ${selectedLocation}` : 'Select a forecast area';
 
   return (
     <div className="page">
@@ -71,7 +60,7 @@ export function ForecastPage() {
           <p className="page-eyebrow">Forecast</p>
           <h2 className="page-title">Singapore forecasts</h2>
           <p className="page-subtitle">
-            Compare location, regional, and national outlooks from data.gov.sg.
+            Compare area, regional, and national outlooks from data.gov.sg.
           </p>
         </div>
       </header>
@@ -84,10 +73,9 @@ export function ForecastPage() {
           value={selectedLocation}
           onChange={setSelectedLocation}
           locationType="ForecastArea"
-          label="2-hour area"
+          label="Forecast area"
           placeholder="Select a forecast area"
         />
-        <RegionSelector value={selectedRegion} onChange={setSelectedRegion} />
         <button type="button" onClick={loadForecasts} disabled={loading}>
           {loading ? 'Refreshing...' : 'Refresh'}
         </button>
@@ -106,13 +94,13 @@ export function ForecastPage() {
           emptyMessage="No 2-hour forecast available for this area."
         />
         <ForecastPanel
-          title="24-hour regional forecast"
-          subtitle={`For ${selectedRegion}`}
+          title="24-hour forecast"
+          subtitle={locationSubtitle}
           data={forecasts.twentyFourHour}
           loading={loading}
           error=""
           onRetry={loadForecasts}
-          emptyMessage="No 24-hour forecast available for this region."
+          emptyMessage="No 24-hour forecast available for this area."
         />
         <ForecastPanel
           title="4-day outlook"

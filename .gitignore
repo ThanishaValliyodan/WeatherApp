@@ -16,6 +16,7 @@ coverage/
 .vs/
 .vscode/
 .idea/
+.qodo/
 .dotnet/
 .templateengine/
 *.user
@@ -55,6 +56,7 @@ pnpm-debug.log*
 # Logs
 *.log
 logs/
+weather-service-run*
 
 # Docker local overrides
 docker-compose.override.yml

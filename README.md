@@ -23,7 +23,7 @@ dotnet restore WeatherApp.sln --configfile NuGet.Config
 dotnet run --project src/WeatherApp.Api/WeatherApp.Api.csproj
 ```
 
-Swagger is available at:
+Swagger is available when `Swagger:Enabled` is `true`. It is enabled by default in Development and disabled by default in the base production configuration.
 
 ```text
 /swagger

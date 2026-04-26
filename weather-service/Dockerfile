@@ -13,7 +13,6 @@ RUN dotnet restore WeatherApp.sln --configfile NuGet.Config
 COPY . .
 RUN dotnet publish src/WeatherApp.Api/WeatherApp.Api.csproj \
     --configuration Release \
-    --no-restore \
     --output /app/publish
 
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime

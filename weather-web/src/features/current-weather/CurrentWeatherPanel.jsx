@@ -26,9 +26,6 @@ export function CurrentWeatherPanel({ data, loading, error, onRetry, locationLab
             <WeatherMetric label="Rainfall" value={formatNumber(data.rainfallMm)} unit="mm" />
             <WeatherMetric label="Wind speed" value={formatNumber(data.windSpeed)} unit="km/h" />
             <WeatherMetric label="Wind direction" value={formatNumber(data.windDirectionDegrees, 0)} unit="deg" />
-            <WeatherMetric label="PM2.5" value={formatNumber(data.pm25, 0)} unit="ug/m3" />
-            <WeatherMetric label="PSI" value={formatNumber(data.psi, 0)} unit="index" />
-            <WeatherMetric label="UV index" value={formatNumber(data.uvIndex, 0)} unit="index" />
           </div>
           {data.sources?.length > 0 && (
             <p className="card-footnote">
